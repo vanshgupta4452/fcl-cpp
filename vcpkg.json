@@ -1,0 +1,11 @@
+{
+  "name": "my-fcl-project",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "fcl",
+    "eigen3",
+    "urdfdom",
+    "urdfdom_headers",
+    "console_bridge"
+  ]
+}

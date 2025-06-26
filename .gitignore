@@ -1,0 +1,22 @@
+# ignore build artifacts
+/vcpkg_installed/
+/build/
+/installed/
+/packages/
+
+# ignore generated files
+*.exe
+*.dll
+*.lib
+*.pdb
+*.obj
+*.o
+
+# ignore CMake temp files
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+
+# temp and fs artifacts
+*.log
+*.tmp
