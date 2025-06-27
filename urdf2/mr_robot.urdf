@@ -1,9 +1,15 @@
 <?xml version="1.0" ?>
 <robot name="mr_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-<xacro:include filename="$(find fcl_coll)/urdf/materials.xacro" />
-<xacro:include filename="$(find fcl_coll)/urdf/mr_robot.trans" />
-<xacro:include filename="$(find fcl_coll)/urdf/mr_robot.gazebo" />
+<xacro:include filename="$(find fcl-cpp
+
+)/urdf/materials.xacro" />
+<xacro:include filename="$(find fcl-cpp
+
+)/urdf/mr_robot.trans" />
+<xacro:include filename="$(find fcl-cpp
+
+)/urdf/mr_robot.gazebo" />
 
 <!-- BASE FOOTPRINT LINK -->
 
@@ -26,14 +32,17 @@
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <geometry>
-     <box size="0.5 0.3 0.1"/>    
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
-    <material name="silver"/>
+    <material name="silver">
+  <color rgba="0.8 0.8 0.8 1"/>
+</material>
+
   </visual>
   <collision>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <geometry>
-      <box size="0.5 0.3 0.1"/>
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -45,17 +54,19 @@
     <inertia ixx="0.002744" iyy="0.005023" izz="0.002744" ixy="0.0" iyz="-0.0" ixz="-0.0"/>
   </inertial>
   <visual>
-    <origin xyz="-0.0 0.172825 0.0556" rpy="1.5708 0 0"/>
+    <origin xyz="0.0 0.4 0.0" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/>    
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/right_wheel__1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
-    <material name="silver"/>
+    <material name="silver">
+  <color rgba="0.8 0.8 0.8 1"/>
+</material>
+
   </visual>
   <collision>
-  
-    <origin xyz="-0.0 0.172825 0.0556" rpy="1.5708 0 0"/>
+    <origin xyz="0.0 0.4 0.0" rpy="0 0 0"/>
     <geometry>
-     <cylinder radius="0.05" length="0.02"/>    
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/right_wheel__1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -67,16 +78,19 @@
     <inertia ixx="0.002744" iyy="0.005023" izz="0.002744" ixy="0.0" iyz="-0.0" ixz="-0.0"/>
   </inertial>
   <visual>
-    <origin xyz="0.0 -0.181075 0.0556" rpy="1.5708 0 0"/>
+    <origin xyz="0.0 -0.4 0.0" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/left_wheel_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
-    <material name="silver"/>
+    <material name="silver">
+  <color rgba="0.8 0.8 0.8 1"/>
+</material>
+
   </visual>
   <collision>
-    <origin xyz="0.0 -0.181075 0.0556" rpy="1.5708 0 0"/>
+    <origin xyz="0.0 -0.4 0.0" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/left_wheel_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -90,14 +104,17 @@
   <visual>
     <origin xyz="-0.0 -0.0 -0.0" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/imu_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
-    <material name="silver"/>
+    <material name="silver">
+  <color rgba="0.8 0.8 0.8 1"/>
+</material>
+
   </visual>
   <collision>
     <origin xyz="-0.0 -0.0 -0.0" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/imu_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -111,14 +128,17 @@
   <visual>
     <origin xyz="-0.087 -0.0 -0.0065" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/gps_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
-    <material name="silver"/>
+    <material name="silver">
+  <color rgba="0.8 0.8 0.8 1"/>
+</material>
+
   </visual>
   <collision>
     <origin xyz="-0.087 -0.0 -0.0065" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/gps_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -132,14 +152,18 @@
   <visual>
     <origin xyz="-0.2625 -0.0 -0.0085" rpy="0 0 0"/>
     <geometry>
-      <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp
+/meshes/Lidar_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
-    <material name="silver"/>
+    <material name="silver">
+  <color rgba="0.8 0.8 0.8 1"/>
+</material>
+
   </visual>
   <collision>
     <origin xyz="-0.2625 -0.0 -0.0085" rpy="0 0 0"/>
     <geometry>
-     <cylinder radius="0.05" length="0.02"/> 
+      <mesh filename="/home/vansh/intern-ardee/src/fcl-cpp/meshes/Lidar_1.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -153,10 +177,10 @@
 </joint>
 
 <joint name="left_motor_joint" type="continuous">
-  <origin xyz="0.0 0.181075 -0.0556" rpy="0 0 0"/>
+  <origin xyz="0.0 -0.4 0.0" rpy="0 0.0 0"/>
   <parent link="base_link"/>
   <child link="left_wheel_1"/>
-  <axis xyz="-0.0 1.0 0.0"/>
+  <axis xyz="-0.0 -0.4 0.0"/>
 </joint>
 
 <joint name="Rigid 15" type="fixed">
