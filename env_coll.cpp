@@ -257,7 +257,7 @@ std::cerr << "";
             CollisionRequestf req;
             CollisionResultf res;
             if (collide(moving_sphere.get(), obj.get(), req, res) && res.isCollision()) {
-                std::cout << "💥 COLLISION with: " << name << "\n";
+                std::cout << " COLLISION with: " << name << "\n";
             }
         }
 

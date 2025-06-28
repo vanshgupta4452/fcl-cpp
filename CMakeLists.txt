@@ -35,6 +35,7 @@ target_link_libraries(main
   urdfdom_sensor
   console_bridge
   Eigen3::Eigen
+  Open3D::Open3D
 )
 
 # ------------------------------------
@@ -64,4 +65,15 @@ target_link_libraries(open3d_env
   Open3D::Open3D
   assimp
   Eigen3::Eigen
+)
+
+add_executable(self_open3d self_open3d.cpp)
+target_link_libraries(self_open3d
+  fcl
+  urdfdom_model
+  urdfdom_world
+  urdfdom_sensor
+  console_bridge
+  Eigen3::Eigen
+  Open3D::Open3D
 )

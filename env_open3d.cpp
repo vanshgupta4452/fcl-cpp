@@ -456,7 +456,7 @@ int main() {
                 CollisionRequestf req;
                 CollisionResultf res;
                 if (collide(moving_sphere.get(), obj.get(), req, res) && res.isCollision()) {
-                    std::cout << "💥 COLLISION with: " << name << std::endl;
+                    std::cout << "COLLISION with: " << name << std::endl;
                     collides = true;
                 }
             }

@@ -154,9 +154,9 @@ int main() {
 
         collide(obj1.second.get(), obj2.second.get(), request, result);
         if (result.isCollision())
-            std::cout << "✅ Collision Detected between [" << obj1.first << "] and [" << obj2.first << "]\n";
+            std::cout << " Collision Detected between [" << obj1.first << "] and [" << obj2.first << "]\n";
         else
-            std::cout << "❌ No Collision between [" << obj1.first << "] and [" << obj2.first << "]\n";
+            std::cout << " No Collision between [" << obj1.first << "] and [" << obj2.first << "]\n";
     }
 
     return 0;
