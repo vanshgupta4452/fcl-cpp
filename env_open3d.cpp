@@ -1,0 +1,509 @@
+#include <fcl/fcl.h>
+#include <urdf_parser/urdf_parser.h>
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#include <open3d/Open3D.h>
+
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <map>
+#include <sstream>
+#include <cmath>
+#include <thread>
+#include <chrono>
+
+using namespace fcl;
+using namespace std;
+
+using BV = OBBRSSf;
+using CollisionShape = std::shared_ptr<BVHModel<BV>>;
+
+// -------------------- SHAPE GENERATORS ------------------------
+CollisionShape createBox(float x, float y, float z) {
+    auto box = std::make_shared<BVHModel<BV>>();
+    std::vector<Vector3f> points = {
+        {-x/2, -y/2, -z/2}, {x/2, -y/2, -z/2}, {x/2, y/2, -z/2}, {-x/2, y/2, -z/2},
+        {-x/2, -y/2, z/2}, {x/2, -y/2, z/2}, {x/2, y/2, z/2}, {-x/2, y/2, z/2}
+    };
+    std::vector<Triangle> triangles = {
+        {0,1,2}, {0,2,3}, {4,7,6}, {4,6,5},
+        {0,4,5}, {0,5,1}, {1,5,6}, {1,6,2},
+        {2,6,7}, {2,7,3}, {3,7,4}, {3,4,0}
+    };
+    box->beginModel();
+    box->addSubModel(points, triangles);
+    box->endModel();
+    return box;
+}
+
+CollisionShape createCylinder(float radius, float length, int segments = 20) {
+    auto cyl = std::make_shared<BVHModel<BV>>();
+    std::vector<Vector3f> points;
+    std::vector<Triangle> triangles;
+    float half = length / 2.0f;
+
+    // Create vertices for top and bottom circles
+    for (int i = 0; i < segments; ++i) {
+        float theta = (2 * M_PI * i) / segments;
+        float x = radius * cos(theta);
+        float y = radius * sin(theta);
+        points.emplace_back(x, y, -half);  // bottom circle
+        points.emplace_back(x, y, half);   // top circle
+    }
+
+    // Add center points for caps
+    Vector3f bottomCenter(0, 0, -half);
+    Vector3f topCenter(0, 0, half);
+    int bottomCenterIdx = points.size();
+    int topCenterIdx = points.size() + 1;
+    points.push_back(bottomCenter);
+    points.push_back(topCenter);
+
+    // Create side triangles
+    for (int i = 0; i < segments; ++i) {
+        int next = (i + 1) % segments;
+        int bottom1 = i * 2;
+        int top1 = i * 2 + 1;
+        int bottom2 = next * 2;
+        int top2 = next * 2 + 1;
+
+        // Two triangles per side face
+        triangles.emplace_back(bottom1, bottom2, top1);
+        triangles.emplace_back(top1, bottom2, top2);
+    }
+
+    // Create bottom cap triangles
+    for (int i = 0; i < segments; ++i) {
+        int next = (i + 1) % segments;
+        int bottom1 = i * 2;
+        int bottom2 = next * 2;
+        triangles.emplace_back(bottomCenterIdx, bottom2, bottom1);
+    }
+
+    // Create top cap triangles
+    for (int i = 0; i < segments; ++i) {
+        int next = (i + 1) % segments;
+        int top1 = i * 2 + 1;
+        int top2 = next * 2 + 1;
+        triangles.emplace_back(topCenterIdx, top1, top2);
+    }
+
+    cyl->beginModel();
+    cyl->addSubModel(points, triangles);
+    cyl->endModel();
+    return cyl;
+}
+
+CollisionShape createSphere(float radius, int rings = 10, int sectors = 20) {
+    auto sphere = std::make_shared<BVHModel<BV>>();
+    std::vector<Vector3f> points;
+    std::vector<Triangle> triangles;
+
+    // Generate sphere vertices
+    for (int r = 0; r <= rings; ++r) {
+        float theta = M_PI * r / rings;
+        float z = radius * cos(theta);
+        float xy = radius * sin(theta);
+
+        for (int s = 0; s <= sectors; ++s) {
+            float phi = 2 * M_PI * s / sectors;
+            float x = xy * cos(phi);
+            float y = xy * sin(phi);
+            points.emplace_back(x, y, z);
+        }
+    }
+
+    // Generate sphere triangles
+    for (int r = 0; r < rings; ++r) {
+        for (int s = 0; s < sectors; ++s) {
+            int cur = r * (sectors + 1) + s;
+            int next = (r + 1) * (sectors + 1) + s;
+
+            triangles.emplace_back(cur, next, cur + 1);
+            triangles.emplace_back(next, next + 1, cur + 1);
+        }
+    }
+
+    sphere->beginModel();
+    sphere->addSubModel(points, triangles);
+    sphere->endModel();
+    return sphere;
+}
+
+// ------------------ Mesh Loader -----------------------
+CollisionShape loadMeshAsBVH(const std::string& path, float scale = 1.0f) {
+    Assimp::Importer importer;
+    const aiScene* scene = importer.ReadFile(path, 
+        aiProcess_Triangulate | 
+        aiProcess_JoinIdenticalVertices |
+        aiProcess_GenNormals);
+    
+    if (!scene || !scene->HasMeshes()) {
+        std::cerr << "Assimp failed to load mesh: " << path << std::endl;
+        return nullptr;
+    }
+
+    auto model = std::make_shared<BVHModel<BV>>();
+    std::vector<Vector3f> vertices;
+    std::vector<Triangle> triangles;
+    int vertex_offset = 0;
+
+    for (unsigned int m = 0; m < scene->mNumMeshes; ++m) {
+        const aiMesh* mesh = scene->mMeshes[m];
+
+        // Add vertices
+        for (unsigned int i = 0; i < mesh->mNumVertices; ++i) {
+            aiVector3D v = mesh->mVertices[i];
+            vertices.emplace_back(scale * v.x, scale * v.y, scale * v.z);
+        }
+
+        // Add triangles
+        for (unsigned int i = 0; i < mesh->mNumFaces; ++i) {
+            const aiFace& face = mesh->mFaces[i];
+            if (face.mNumIndices != 3) continue; // Skip non-triangular faces
+            triangles.emplace_back(
+                face.mIndices[0] + vertex_offset,
+                face.mIndices[1] + vertex_offset,
+                face.mIndices[2] + vertex_offset
+            );
+        }
+
+        vertex_offset += mesh->mNumVertices;
+    }
+
+    if (vertices.empty() || triangles.empty()) {
+        std::cerr << "No valid mesh data found in: " << path << std::endl;
+        return nullptr;
+    }
+
+    model->beginModel();
+    model->addSubModel(vertices, triangles);
+    model->endModel();
+    return model;
+}
+
+// -------------------- URDF Parser ------------------------
+std::map<std::string, std::shared_ptr<CollisionObjectf>> parseURDFToFCL(const std::string& urdf_path) {
+    std::ifstream urdf_file(urdf_path);
+    if (!urdf_file.is_open()) {
+        std::cerr << "URDF file not found: " << urdf_path << std::endl;
+        return {};
+    }
+
+    std::stringstream buffer;
+    buffer << urdf_file.rdbuf();
+    std::string urdf_string = buffer.str();
+
+    auto robot = urdf::parseURDF(urdf_string);
+    if (!robot) {
+        std::cerr << "Failed to parse URDF" << std::endl;
+        return {};
+    }
+
+    std::map<std::string, std::shared_ptr<CollisionObjectf>> link_objects;
+
+    for (const auto& [name, link] : robot->links_) {
+        if (!link->collision || !link->collision->geometry) {
+            std::cout << "Skipping link " << name << " (no collision geometry)" << std::endl;
+            continue;
+        }
+
+        auto geom = link->collision->geometry;
+        CollisionShape shape;
+
+        try {
+            if (geom->type == urdf::Geometry::BOX) {
+                auto box = std::dynamic_pointer_cast<urdf::Box>(geom);
+                if (!box) {
+                    std::cerr << "Failed to cast to Box geometry for link: " << name << std::endl;
+                    continue;
+                }
+                shape = createBox(box->dim.x, box->dim.y, box->dim.z);
+                std::cout << "Created box for link: " << name << std::endl;
+            } 
+            else if (geom->type == urdf::Geometry::CYLINDER) {
+                auto cyl = std::dynamic_pointer_cast<urdf::Cylinder>(geom);
+                if (!cyl) {
+                    std::cerr << "Failed to cast to Cylinder geometry for link: " << name << std::endl;
+                    continue;
+                }
+                shape = createCylinder(cyl->radius, cyl->length);
+                std::cout << "Created cylinder for link: " << name << std::endl;
+            } 
+            else if (geom->type == urdf::Geometry::SPHERE) {
+                auto sph = std::dynamic_pointer_cast<urdf::Sphere>(geom);
+                if (!sph) {
+                    std::cerr << "Failed to cast to Sphere geometry for link: " << name << std::endl;
+                    continue;
+                }
+                shape = createSphere(sph->radius);
+                std::cout << "Created sphere for link: " << name << std::endl;
+            } 
+            else if (geom->type == urdf::Geometry::MESH) {
+                auto mesh = std::dynamic_pointer_cast<urdf::Mesh>(geom);
+                if (!mesh) {
+                    std::cerr << "Failed to cast to Mesh geometry for link: " << name << std::endl;
+                    continue;
+                }
+                
+                // Handle relative paths and package:// URIs
+                std::string mesh_path = mesh->filename;
+                if (mesh_path.find("package://") == 0) {
+                    // Simple package:// replacement - you may need to customize this
+                    mesh_path = mesh_path.replace(0, 10, "");
+                }
+                
+                float scale_factor = (mesh->scale.x + mesh->scale.y + mesh->scale.z) / 3.0f;
+                shape = loadMeshAsBVH(mesh_path, scale_factor);
+                if (!shape) {
+                    std::cerr << "Failed to load mesh for link: " << name << " from: " << mesh_path << std::endl;
+                    continue;
+                }
+                std::cout << "Created mesh for link: " << name << std::endl;
+            } 
+            else {
+                std::cout << "Unsupported geometry type for link: " << name << std::endl;
+                continue;
+            }
+
+            if (!shape) {
+                std::cerr << "Failed to create shape for link: " << name << std::endl;
+                continue;
+            }
+
+            // Set up transform
+            auto& origin = link->collision->origin;
+            Vector3f trans(origin.position.x, origin.position.y, origin.position.z);
+            
+            // Create quaternion and convert to rotation matrix
+            Quaternionf quat(origin.rotation.w, origin.rotation.x, origin.rotation.y, origin.rotation.z);
+            quat.normalize(); // Ensure quaternion is normalized
+            
+            Transform3f tf;
+            tf.linear() = quat.toRotationMatrix();
+            tf.translation() = trans;
+
+            auto collision_obj = std::make_shared<CollisionObjectf>(shape, tf);
+            collision_obj->computeAABB();
+            link_objects[name] = collision_obj;
+            
+            std::cout << "Successfully created collision object for link: " << name << std::endl;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Exception while processing link " << name << ": " << e.what() << std::endl;
+            continue;
+        }
+    }
+
+    std::cout << "Total links processed: " << link_objects.size() << std::endl;
+    return link_objects;
+}
+
+// ------------------ Convert to Open3D ---------------------
+std::shared_ptr<open3d::geometry::TriangleMesh> FCLToOpen3DMesh(
+    const CollisionShape& shape,
+    const Transform3f& tf,
+    const Eigen::Vector3d& color
+) {
+    if (!shape) {
+        std::cerr << "Null shape provided to FCLToOpen3DMesh" << std::endl;
+        return nullptr;
+    }
+
+    // Cast to BVHModel
+    auto bvh = std::dynamic_pointer_cast<const BVHModel<BV>>(shape);
+    if (!bvh) {
+        std::cerr << "Failed to cast to BVHModel" << std::endl;
+        return nullptr;
+    }
+
+    auto mesh = std::make_shared<open3d::geometry::TriangleMesh>();
+
+    std::cout << "Converting mesh: " << bvh->num_vertices << " vertices, " << bvh->num_tris << " triangles" << std::endl;
+
+    // Convert vertices
+    mesh->vertices_.reserve(bvh->num_vertices);
+    for (int i = 0; i < bvh->num_vertices; ++i) {
+        const Vector3f& v = bvh->vertices[i];
+        Vector3f v_tf = tf * v;  // Apply transformation
+        mesh->vertices_.emplace_back(static_cast<double>(v_tf[0]), 
+                                   static_cast<double>(v_tf[1]), 
+                                   static_cast<double>(v_tf[2]));
+    }
+
+    // Convert triangles
+    mesh->triangles_.reserve(bvh->num_tris);
+    for (int i = 0; i < bvh->num_tris; ++i) {
+        const Triangle& tri = bvh->tri_indices[i];
+        // Validate triangle indices
+        if (tri[0] < bvh->num_vertices && tri[1] < bvh->num_vertices && tri[2] < bvh->num_vertices) {
+            mesh->triangles_.emplace_back(Eigen::Vector3i(tri[0], tri[1], tri[2]));
+        } else {
+            std::cerr << "Invalid triangle indices: " << tri[0] << ", " << tri[1] << ", " << tri[2] << std::endl;
+        }
+    }
+
+    if (mesh->vertices_.empty() || mesh->triangles_.empty()) {
+        std::cerr << "Empty mesh generated - vertices: " << mesh->vertices_.size() 
+                  << ", triangles: " << mesh->triangles_.size() << std::endl;
+        return nullptr;
+    }
+
+    std::cout << "Created Open3D mesh: " << mesh->vertices_.size() << " vertices, " 
+              << mesh->triangles_.size() << " triangles" << std::endl;
+
+    // Paint the mesh with the specified color
+    mesh->PaintUniformColor(color);
+    
+    // Compute normals for proper lighting
+    mesh->ComputeVertexNormals();
+    
+    // Ensure the mesh is valid
+    if (!mesh->HasVertices() || !mesh->HasTriangles()) {
+        std::cerr << "Generated mesh is invalid" << std::endl;
+        return nullptr;
+    }
+
+    return mesh;
+}
+
+// -------------------- Main ------------------------
+int main() {
+    std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-cpp/urdf2/mr_robot.urdf";
+    
+    std::cout << "Parsing URDF file: " << urdf_path << std::endl;
+    auto models = parseURDFToFCL(urdf_path);
+    
+    if (models.empty()) {
+        std::cerr << "No models found in URDF file" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Found " << models.size() << " collision objects" << std::endl;
+
+    // Create moving sphere
+    auto sphere_geom = createSphere(0.2f);
+    auto moving_sphere = std::make_shared<CollisionObjectf>(sphere_geom);
+
+    // Initialize Open3D visualizer
+    open3d::visualization::Visualizer vis;
+    if (!vis.CreateVisualizerWindow("FCL + Open3D Viewer", 1280, 720)) {
+        std::cerr << "Failed to create visualizer window" << std::endl;
+        return 1;
+    }
+
+    // Set up camera and rendering options
+    auto& view_control = vis.GetViewControl();
+    auto& render_option = vis.GetRenderOption();
+    render_option.mesh_show_wireframe_ = false;
+    render_option.mesh_show_back_face_ = true;
+    render_option.light_on_ = true;
+    
+    // Set initial camera position
+    view_control.SetZoom(0.3);
+    view_control.SetLookat(Eigen::Vector3d(0, 0, 0));
+    view_control.SetUp(Eigen::Vector3d(0, 0, 1));
+    view_control.SetFront(Eigen::Vector3d(1, 1, 1));
+
+    float z = -2.0f;
+    bool running = true;
+    bool first_frame = true;
+    std::shared_ptr<open3d::geometry::TriangleMesh> moving_sphere_mesh = nullptr;
+    
+    // First, add all static geometries once
+    std::vector<std::shared_ptr<open3d::geometry::TriangleMesh>> static_meshes;
+    for (const auto& [name, obj] : models) {
+        auto obj_shape = std::dynamic_pointer_cast<BVHModel<BV>>(
+            std::const_pointer_cast<CollisionGeometryf>(obj->collisionGeometry())
+        );
+        
+        if (obj_shape) {
+            auto mesh = FCLToOpen3DMesh(obj_shape, obj->getTransform(), Eigen::Vector3d(0.7, 0.7, 0.7));
+            if (mesh) {
+                std::cout << "Adding static mesh for: " << name << std::endl;
+                static_meshes.push_back(mesh);
+                vis.AddGeometry(mesh, false);
+            }
+        }
+    }
+
+    // Create coordinate frame for reference
+    auto coord_frame = open3d::geometry::TriangleMesh::CreateCoordinateFrame(1.0);
+    vis.AddGeometry(coord_frame, false);
+
+    std::cout << "Added " << static_meshes.size() << " static meshes to visualizer" << std::endl;
+
+    while (running) {
+        // Update sphere position
+        z += 0.05f;
+        if (z > 2.0f) z = -2.0f;
+
+        Transform3f tf;
+        tf.translation() = Vector3f(0, 0, z);
+        tf.linear() = Matrix3f::Identity();
+        moving_sphere->setTransform(tf);
+        moving_sphere->computeAABB();
+
+        // Update colors based on collisions
+        int mesh_idx = 0;
+        for (const auto& [name, obj] : models) {
+            if (mesh_idx >= static_meshes.size()) break;
+            
+            bool collides = false;
+            try {
+                CollisionRequestf req;
+                CollisionResultf res;
+                if (collide(moving_sphere.get(), obj.get(), req, res) && res.isCollision()) {
+                    std::cout << "💥 COLLISION with: " << name << std::endl;
+                    collides = true;
+                }
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Error during collision check with " << name << ": " << e.what() << std::endl;
+            }
+
+            // Update mesh color
+            auto color = collides ? Eigen::Vector3d(1, 0, 0) : Eigen::Vector3d(0.7, 0.7, 0.7);
+            static_meshes[mesh_idx]->PaintUniformColor(color);
+            mesh_idx++;
+        }
+
+       if (!moving_sphere_mesh) {
+            moving_sphere_mesh = FCLToOpen3DMesh(sphere_geom, tf, Eigen::Vector3d(0, 0.6, 1));
+            vis.AddGeometry(moving_sphere_mesh, false);
+        } else {
+            // Update vertices
+            moving_sphere_mesh->vertices_.clear();
+            auto bvh = std::dynamic_pointer_cast<const BVHModel<BV>>(sphere_geom);
+            for (int i = 0; i < bvh->num_vertices; ++i) {
+                const Vector3f& v = bvh->vertices[i];
+                Vector3f v_tf = tf * v;
+                moving_sphere_mesh->vertices_.emplace_back(static_cast<double>(v_tf[0]),
+                                                        static_cast<double>(v_tf[1]),
+                                                        static_cast<double>(v_tf[2]));
+            }
+            moving_sphere_mesh->ComputeVertexNormals();
+            vis.UpdateGeometry(moving_sphere_mesh);
+        }
+
+
+        if (first_frame) {
+            // Auto-fit the view to show all geometry
+            view_control.FitInGeometry(coord_frame->GetAxisAlignedBoundingBox());
+            first_frame = false;
+        }
+
+        // Update visualization
+        if (!vis.PollEvents()) {
+            running = false;
+        }
+        vis.UpdateRender();
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    vis.DestroyVisualizerWindow();
+    return 0;
+}
