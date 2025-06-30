@@ -1,4 +1,4 @@
-# fcl-cpp# FCL + Open3D URDF Collision Project (C++)
+#  FCL + Open3D URDF Collision 
 
 This project demonstrates collision detection using the **Flexible Collision Library (FCL)** and visualization using **Open3D** in pure C++. It loads robot models from URDF, converts them into FCL shapes, and performs:
 
