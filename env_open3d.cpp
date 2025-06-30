@@ -369,6 +369,13 @@ std::shared_ptr<open3d::geometry::TriangleMesh> FCLToOpen3DMesh(
     return mesh;
 }
 
+// Helper function to print transform for debugging
+void printTransform(const std::string& name, const Transform3f& tf) {
+    std::cout << name << " Transform:" << std::endl;
+    std::cout << "  Translation: " << tf.translation().transpose() << std::endl;
+    std::cout << "  Rotation:\n" << tf.linear() << std::endl;
+}
+
 // -------------------- Main ------------------------
 int main() {
     std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-cpp/urdf2/mr_robot.urdf";
@@ -383,8 +390,8 @@ int main() {
 
     std::cout << "Found " << models.size() << " collision objects" << std::endl;
 
-    // Create moving sphere
-    auto sphere_geom = createSphere(0.2f);
+    // Create moving sphere - make it larger for easier collision detection
+    auto sphere_geom = createSphere(0.1f);  // Increased size from 0.2f
     auto moving_sphere = std::make_shared<CollisionObjectf>(sphere_geom);
 
     // Initialize Open3D visualizer
@@ -412,8 +419,10 @@ int main() {
     bool first_frame = true;
     std::shared_ptr<open3d::geometry::TriangleMesh> moving_sphere_mesh = nullptr;
     
+    // Create mapping between models and their meshes for easier access
+    std::map<std::string, std::shared_ptr<open3d::geometry::TriangleMesh>> mesh_map;
+    
     // First, add all static geometries once
-    std::vector<std::shared_ptr<open3d::geometry::TriangleMesh>> static_meshes;
     for (const auto& [name, obj] : models) {
         auto obj_shape = std::dynamic_pointer_cast<BVHModel<BV>>(
             std::const_pointer_cast<CollisionGeometryf>(obj->collisionGeometry())
@@ -423,8 +432,13 @@ int main() {
             auto mesh = FCLToOpen3DMesh(obj_shape, obj->getTransform(), Eigen::Vector3d(0.7, 0.7, 0.7));
             if (mesh) {
                 std::cout << "Adding static mesh for: " << name << std::endl;
-                static_meshes.push_back(mesh);
+                mesh_map[name] = mesh;
                 vis.AddGeometry(mesh, false);
+                
+                // Print some debug info about the mesh bounds
+                auto bbox = mesh->GetAxisAlignedBoundingBox();
+                std::cout << "  Mesh " << name << " bounds: min=" << bbox.GetMinBound().transpose() 
+                          << " max=" << bbox.GetMaxBound().transpose() << std::endl;
             }
         }
     }
@@ -433,61 +447,99 @@ int main() {
     auto coord_frame = open3d::geometry::TriangleMesh::CreateCoordinateFrame(1.0);
     vis.AddGeometry(coord_frame, false);
 
-    std::cout << "Added " << static_meshes.size() << " static meshes to visualizer" << std::endl;
+    std::cout << "Added " << mesh_map.size() << " static meshes to visualizer" << std::endl;
+
+    // Animation parameters
+    float speed = 0.03f;  // Slower movement for better observation
+    int collision_count = 0;
 
     while (running) {
         // Update sphere position
-        z += 0.05f;
+        z += speed;
         if (z > 2.0f) z = -2.0f;
 
+        // Create transform for moving sphere
         Transform3f tf;
         tf.translation() = Vector3f(0, 0, z);
         tf.linear() = Matrix3f::Identity();
         moving_sphere->setTransform(tf);
         moving_sphere->computeAABB();
 
-        // Update colors based on collisions
-        int mesh_idx = 0;
+        // Debug: Print sphere position
+        if (static_cast<int>(z * 100) % 50 == 0) {  // Print every 0.5 units
+            std::cout << "Sphere position: " << tf.translation().transpose() << std::endl;
+        }
+
+        // Reset collision counter
+        collision_count = 0;
+
+        // Check collisions and update colors
         for (const auto& [name, obj] : models) {
-            if (mesh_idx >= static_meshes.size()) break;
-            
             bool collides = false;
             try {
                 CollisionRequestf req;
                 CollisionResultf res;
-                if (collide(moving_sphere.get(), obj.get(), req, res) && res.isCollision()) {
-                    std::cout << "COLLISION with: " << name << std::endl;
+                
+                // Enable contact computation for more detailed results
+                req.enable_contact = true;
+                req.num_max_contacts = 1;
+                
+                int collision_result = collide(moving_sphere.get(), obj.get(), req, res);
+                
+                if (collision_result > 0 && res.isCollision()) {
+                    std::cout << "COLLISION DETECTED with: " << name << std::endl;
+                    std::cout << "  Number of contacts: " << res.numContacts() << std::endl;
                     collides = true;
+                    collision_count++;
+                    
+                    // Print collision details
+                    if (res.numContacts() > 0) {
+                        auto contact = res.getContact(0);
+                        std::cout << "  Contact point: " << contact.pos.transpose() << std::endl;
+                        std::cout << "  Penetration depth: " << contact.penetration_depth << std::endl;
+                    }
                 }
             }
             catch (const std::exception& e) {
                 std::cerr << "Error during collision check with " << name << ": " << e.what() << std::endl;
             }
 
-            // Update mesh color
-            auto color = collides ? Eigen::Vector3d(1, 0, 0) : Eigen::Vector3d(0.7, 0.7, 0.7);
-            static_meshes[mesh_idx]->PaintUniformColor(color);
-            mesh_idx++;
+            // Update mesh color if it exists in the map
+            if (mesh_map.find(name) != mesh_map.end()) {
+                auto color = collides ? Eigen::Vector3d(1, 0, 0) : Eigen::Vector3d(0.7, 0.7, 0.7);
+                mesh_map[name]->PaintUniformColor(color);
+                vis.UpdateGeometry(mesh_map[name]);  // Important: Update the geometry in visualizer
+            }
         }
 
-       if (!moving_sphere_mesh) {
+        // Create/update moving sphere mesh
+        if (!moving_sphere_mesh) {
             moving_sphere_mesh = FCLToOpen3DMesh(sphere_geom, tf, Eigen::Vector3d(0, 0.6, 1));
-            vis.AddGeometry(moving_sphere_mesh, false);
+            if (moving_sphere_mesh) {
+                vis.AddGeometry(moving_sphere_mesh, false);
+                std::cout << "Added moving sphere mesh" << std::endl;
+            }
         } else {
-            // Update vertices
+            // Update sphere position by recreating vertices
             moving_sphere_mesh->vertices_.clear();
             auto bvh = std::dynamic_pointer_cast<const BVHModel<BV>>(sphere_geom);
-            for (int i = 0; i < bvh->num_vertices; ++i) {
-                const Vector3f& v = bvh->vertices[i];
-                Vector3f v_tf = tf * v;
-                moving_sphere_mesh->vertices_.emplace_back(static_cast<double>(v_tf[0]),
-                                                        static_cast<double>(v_tf[1]),
-                                                        static_cast<double>(v_tf[2]));
+            if (bvh) {
+                for (int i = 0; i < bvh->num_vertices; ++i) {
+                    const Vector3f& v = bvh->vertices[i];
+                    Vector3f v_tf = tf * v;
+                    moving_sphere_mesh->vertices_.emplace_back(static_cast<double>(v_tf[0]),
+                                                            static_cast<double>(v_tf[1]),
+                                                            static_cast<double>(v_tf[2]));
+                }
+                moving_sphere_mesh->ComputeVertexNormals();
+                vis.UpdateGeometry(moving_sphere_mesh);
             }
-            moving_sphere_mesh->ComputeVertexNormals();
-            vis.UpdateGeometry(moving_sphere_mesh);
         }
 
+        // Print collision summary
+        if (collision_count > 0) {
+            std::cout << "Total collisions this frame: " << collision_count << std::endl;
+        }
 
         if (first_frame) {
             // Auto-fit the view to show all geometry
