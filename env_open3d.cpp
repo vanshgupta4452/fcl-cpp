@@ -184,6 +184,23 @@ CollisionShape loadMeshAsBVH(const std::string& path, float scale = 1.0f) {
     return model;
 }
 
+Eigen::Isometry3f getFullLinkTransform(const urdf::LinkConstSharedPtr& link) {
+    if (!link) return Eigen::Isometry3f::Identity();
+
+    if (!link->parent_joint) return Eigen::Isometry3f::Identity();
+
+    const urdf::Pose& pose = link->parent_joint->parent_to_joint_origin_transform;
+
+    Eigen::Isometry3f tf = Eigen::Isometry3f::Identity();
+    tf.translation() << pose.position.x, pose.position.y, pose.position.z;
+
+    Eigen::Quaternionf q(pose.rotation.w, pose.rotation.x, pose.rotation.y, pose.rotation.z);
+    tf.linear() = q.normalized().toRotationMatrix();
+
+    // Recursively accumulate transform
+    return getFullLinkTransform(link->getParent()) * tf;
+}
+
 // -------------------- URDF Parser ------------------------
 std::map<std::string, std::shared_ptr<CollisionObjectf>> parseURDFToFCL(const std::string& urdf_path) {
     std::ifstream urdf_file(urdf_path);
@@ -216,51 +233,28 @@ std::map<std::string, std::shared_ptr<CollisionObjectf>> parseURDFToFCL(const st
         try {
             if (geom->type == urdf::Geometry::BOX) {
                 auto box = std::dynamic_pointer_cast<urdf::Box>(geom);
-                if (!box) {
-                    std::cerr << "Failed to cast to Box geometry for link: " << name << std::endl;
-                    continue;
-                }
                 shape = createBox(box->dim.x, box->dim.y, box->dim.z);
                 std::cout << "Created box for link: " << name << std::endl;
             } 
             else if (geom->type == urdf::Geometry::CYLINDER) {
                 auto cyl = std::dynamic_pointer_cast<urdf::Cylinder>(geom);
-                if (!cyl) {
-                    std::cerr << "Failed to cast to Cylinder geometry for link: " << name << std::endl;
-                    continue;
-                }
                 shape = createCylinder(cyl->radius, cyl->length);
                 std::cout << "Created cylinder for link: " << name << std::endl;
             } 
             else if (geom->type == urdf::Geometry::SPHERE) {
                 auto sph = std::dynamic_pointer_cast<urdf::Sphere>(geom);
-                if (!sph) {
-                    std::cerr << "Failed to cast to Sphere geometry for link: " << name << std::endl;
-                    continue;
-                }
                 shape = createSphere(sph->radius);
                 std::cout << "Created sphere for link: " << name << std::endl;
             } 
             else if (geom->type == urdf::Geometry::MESH) {
                 auto mesh = std::dynamic_pointer_cast<urdf::Mesh>(geom);
-                if (!mesh) {
-                    std::cerr << "Failed to cast to Mesh geometry for link: " << name << std::endl;
-                    continue;
-                }
-                
-                // Handle relative paths and package:// URIs
                 std::string mesh_path = mesh->filename;
                 if (mesh_path.find("package://") == 0) {
-                    // Simple package:// replacement - you may need to customize this
-                    mesh_path = mesh_path.replace(0, 10, "");
+                    std::string pkg_root = "/home/vansh/intern-ardee/src/";
+                    mesh_path = pkg_root + mesh_path.substr(10);  // remove 'package://'
                 }
-                
                 float scale_factor = (mesh->scale.x + mesh->scale.y + mesh->scale.z) / 3.0f;
                 shape = loadMeshAsBVH(mesh_path, scale_factor);
-                if (!shape) {
-                    std::cerr << "Failed to load mesh for link: " << name << " from: " << mesh_path << std::endl;
-                    continue;
-                }
                 std::cout << "Created mesh for link: " << name << std::endl;
             } 
             else {
@@ -268,36 +262,36 @@ std::map<std::string, std::shared_ptr<CollisionObjectf>> parseURDFToFCL(const st
                 continue;
             }
 
-            if (!shape) {
-                std::cerr << "Failed to create shape for link: " << name << std::endl;
-                continue;
-            }
+            // Get full TF from root -> this link
+            Eigen::Isometry3f full_tf = getFullLinkTransform(link);
 
-            // Set up transform
-            auto& origin = link->collision->origin;
-            Vector3f trans(origin.position.x, origin.position.y, origin.position.z);
-            
-            // Create quaternion and convert to rotation matrix
-            Quaternionf quat(origin.rotation.w, origin.rotation.x, origin.rotation.y, origin.rotation.z);
-            quat.normalize(); // Ensure quaternion is normalized
-            
+            // Get local collision origin offset
+            auto& local_origin = link->collision->origin;
+            Eigen::Isometry3f local_tf = Eigen::Isometry3f::Identity();
+            local_tf.translation() << local_origin.position.x, local_origin.position.y, local_origin.position.z;
+            Eigen::Quaternionf q(local_origin.rotation.w, local_origin.rotation.x, local_origin.rotation.y, local_origin.rotation.z);
+            local_tf.linear() = q.normalized().toRotationMatrix();
+
+            // Combine both
+            Eigen::Isometry3f final_tf = full_tf * local_tf;
+
             Transform3f tf;
-            tf.linear() = quat.toRotationMatrix();
-            tf.translation() = trans;
+            tf.linear() = final_tf.linear().cast<float>();
+            tf.translation() = final_tf.translation().cast<float>();
 
             auto collision_obj = std::make_shared<CollisionObjectf>(shape, tf);
             collision_obj->computeAABB();
             link_objects[name] = collision_obj;
-            
-            std::cout << "Successfully created collision object for link: " << name << std::endl;
-        }
-        catch (const std::exception& e) {
-            std::cerr << "Exception while processing link " << name << ": " << e.what() << std::endl;
+
+            std::cout << "[TF] Link: " << name 
+                      << " | Translation: " << tf.translation().transpose() << std::endl;
+
+        } catch (const std::exception& e) {
+            std::cerr << "Error processing link " << name << ": " << e.what() << std::endl;
             continue;
         }
     }
 
-    std::cout << "Total links processed: " << link_objects.size() << std::endl;
     return link_objects;
 }
 
@@ -369,7 +363,7 @@ std::shared_ptr<open3d::geometry::TriangleMesh> FCLToOpen3DMesh(
     return mesh;
 }
 
-// Helper function to print transform for debugging
+// Helper function to print transform 
 void printTransform(const std::string& name, const Transform3f& tf) {
     std::cout << name << " Transform:" << std::endl;
     std::cout << "  Translation: " << tf.translation().transpose() << std::endl;
@@ -378,7 +372,7 @@ void printTransform(const std::string& name, const Transform3f& tf) {
 
 // -------------------- Main ------------------------
 int main() {
-    std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-cpp/urdf2/mr_robot.urdf";
+    std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-cpp/urdf/PXA-100.urdf";
     
     std::cout << "Parsing URDF file: " << urdf_path << std::endl;
     auto models = parseURDFToFCL(urdf_path);
@@ -444,7 +438,7 @@ int main() {
     }
 
     // Create coordinate frame for reference
-    auto coord_frame = open3d::geometry::TriangleMesh::CreateCoordinateFrame(1.0);
+    auto coord_frame = open3d::geometry::TriangleMesh::CreateCoordinateFrame(0.1);
     vis.AddGeometry(coord_frame, false);
 
     std::cout << "Added " << mesh_map.size() << " static meshes to visualizer" << std::endl;
@@ -543,7 +537,15 @@ int main() {
 
         if (first_frame) {
             // Auto-fit the view to show all geometry
-            view_control.FitInGeometry(coord_frame->GetAxisAlignedBoundingBox());
+            // view_control.FitInGeometry(coord_frame->GetAxisAlignedBoundingBox());
+            auto full_bbox = coord_frame->GetAxisAlignedBoundingBox();
+            for (const auto& [_, mesh] : mesh_map) {
+                full_bbox += mesh->GetAxisAlignedBoundingBox();
+            }
+            if (moving_sphere_mesh) {
+                full_bbox += moving_sphere_mesh->GetAxisAlignedBoundingBox();
+            }
+            view_control.FitInGeometry(full_bbox);
             first_frame = false;
         }
 

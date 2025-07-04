@@ -1,3 +1,4 @@
+// -------------------- HEADERS ------------------------
 #include <fcl/fcl.h>
 #include <urdf_parser/urdf_parser.h>
 #include <open3d/Open3D.h>
@@ -5,14 +6,19 @@
 #include <iostream>
 #include <memory>
 #include <map>
+#include <set>
 #include <sstream>
 #include <random>
+#include <algorithm>
 
 using namespace fcl;
 using namespace std;
 
 using BV = OBBRSSf;
 using CollisionShape = std::shared_ptr<BVHModel<BV>>;
+
+// Forward declaration
+std::set<std::pair<std::string, std::string>> getAdjacentLinkPairs(const urdf::ModelInterfaceSharedPtr& robot);
 
 // -------------------- SHAPE GENERATORS ------------------------
 CollisionShape createBox(float x, float y, float z) {
@@ -39,7 +45,6 @@ CollisionShape createCylinder(float radius, float length, int segments = 20) {
 
     float half = length / 2.0f;
 
-    // Side surface
     for (int i = 0; i < segments; ++i) {
         float theta1 = (2 * M_PI * i) / segments;
         float theta2 = (2 * M_PI * (i + 1)) / segments;
@@ -58,7 +63,6 @@ CollisionShape createCylinder(float radius, float length, int segments = 20) {
         triangles.emplace_back(base + 0, base + 2, base + 3);
     }
 
-    // Top and bottom caps
     Vector3f topCenter(0, 0, half), bottomCenter(0, 0, -half);
     int topIndex = points.size(); points.push_back(topCenter);
     int bottomIndex = points.size(); points.push_back(bottomCenter);
@@ -92,21 +96,17 @@ CollisionShape createSphere(float radius, int segments = 20) {
     std::vector<Vector3f> points;
     std::vector<Triangle> triangles;
 
-    // Generate vertices using spherical coordinates
     for (int i = 0; i <= segments; ++i) {
-        float phi = M_PI * i / segments;  // Latitude angle
+        float phi = M_PI * i / segments;
         for (int j = 0; j <= segments; ++j) {
-            float theta = 2 * M_PI * j / segments;  // Longitude angle
-            
+            float theta = 2 * M_PI * j / segments;
             float x = radius * sin(phi) * cos(theta);
             float y = radius * sin(phi) * sin(theta);
             float z = radius * cos(phi);
-            
             points.emplace_back(x, y, z);
         }
     }
 
-    // Generate triangles
     for (int i = 0; i < segments; ++i) {
         for (int j = 0; j < segments; ++j) {
             int p1 = i * (segments + 1) + j;
@@ -114,12 +114,10 @@ CollisionShape createSphere(float radius, int segments = 20) {
             int p3 = p1 + 1;
             int p4 = p2 + 1;
 
-            if (i != 0) {  // Not the north pole
+            if (i != 0)
                 triangles.emplace_back(p1, p2, p3);
-            }
-            if (i != segments - 1) {  // Not the south pole
+            if (i != segments - 1)
                 triangles.emplace_back(p3, p2, p4);
-            }
         }
     }
 
@@ -130,59 +128,30 @@ CollisionShape createSphere(float radius, int segments = 20) {
 }
 
 CollisionShape createMeshFromFile(const std::string& mesh_path, const urdf::Vector3& scale = {1.0, 1.0, 1.0}) {
-    std::cout << " Loading mesh file: " << mesh_path << std::endl;
-    
-    // Clean up the path - remove package:// prefix if present
     std::string file_path = mesh_path;
-    if (file_path.find("package://") == 0) {
-        file_path = file_path.substr(10); // Remove "package://"
-        std::cout << "   🔧 Cleaned path: " << file_path << std::endl;
-    }
-    
-    // Try different mesh loading approaches
+    if (file_path.find("package://") == 0)
+        file_path = file_path.substr(10);
+
     auto mesh = std::make_shared<BVHModel<BV>>();
     std::vector<Vector3f> points;
     std::vector<Triangle> triangles;
-    
+
     try {
-        // Try loading with Open3D first
         auto open3d_mesh = open3d::io::CreateMeshFromFile(file_path);
         if (open3d_mesh && !open3d_mesh->vertices_.empty()) {
-            std::cout << "   Successfully loaded mesh with Open3D" << std::endl;
-            std::cout << "  Vertices: " << open3d_mesh->vertices_.size() 
-                      << ", Triangles: " << open3d_mesh->triangles_.size() << std::endl;
-            
-            // Convert Open3D mesh to FCL format
-            for (const auto& vertex : open3d_mesh->vertices_) {
-                points.emplace_back(
-                    vertex.x() * scale.x,
-                    vertex.y() * scale.y,
-                    vertex.z() * scale.z
-                );
-            }
-            
-            for (const auto& triangle : open3d_mesh->triangles_) {
+            for (const auto& vertex : open3d_mesh->vertices_)
+                points.emplace_back(vertex.x() * scale.x, vertex.y() * scale.y, vertex.z() * scale.z);
+
+            for (const auto& triangle : open3d_mesh->triangles_)
                 triangles.emplace_back(triangle.x(), triangle.y(), triangle.z());
-            }
-            
-            if (scale.x != 1.0 || scale.y != 1.0 || scale.z != 1.0) {
-                std::cout << "   📏 Applied scale: " << scale.x << " x " << scale.y << " x " << scale.z << std::endl;
-            }
-            
         } else {
-            throw std::runtime_error("Failed to load with Open3D");
+            throw std::runtime_error("Open3D load failed");
         }
-        
-    } catch (const std::exception& e) {
-        std::cout << " Failed to load mesh file (" << e.what() << "), using default box" << std::endl;
-        
-        // Create a default box as fallback
-        float size = 0.1f;
+    } catch (...) {
+        float s = 0.1f;
         points = {
-            {-size/2, -size/2, -size/2}, {size/2, -size/2, -size/2}, 
-            {size/2, size/2, -size/2}, {-size/2, size/2, -size/2},
-            {-size/2, -size/2, size/2}, {size/2, -size/2, size/2}, 
-            {size/2, size/2, size/2}, {-size/2, size/2, size/2}
+            {-s, -s, -s}, {s, -s, -s}, {s, s, -s}, {-s, s, -s},
+            {-s, -s, s}, {s, -s, s}, {s, s, s}, {-s, s, s}
         };
         triangles = {
             {0,1,2}, {0,2,3}, {4,5,6}, {4,6,7},
@@ -190,68 +159,85 @@ CollisionShape createMeshFromFile(const std::string& mesh_path, const urdf::Vect
             {2,3,7}, {2,7,6}, {3,0,4}, {3,4,7}
         };
     }
-    
+
     if (!points.empty() && !triangles.empty()) {
         mesh->beginModel();
         mesh->addSubModel(points, triangles);
         mesh->endModel();
         return mesh;
     }
-    
-    std::cout << " ailed to create mesh, returning nullptr" << std::endl;
+
+    std::cerr << "Failed to create mesh, returning nullptr" << std::endl;
     return nullptr;
 }
 
-// -------------------- OPEN3D CONVERSION ------------------------
-std::shared_ptr<open3d::geometry::TriangleMesh> fclToOpen3D(
-    const CollisionShape& shape, 
-    const Transform3f& transform,
-    const Eigen::Vector3d& color = Eigen::Vector3d(0.7, 0.7, 0.7)) {
-    
-    auto mesh = std::make_shared<open3d::geometry::TriangleMesh>();
-    
-    // Extract vertices from FCL BVH model
-    std::vector<Eigen::Vector3d> vertices;
-    std::vector<Eigen::Vector3i> triangles;
-    
-    if (shape && shape->num_vertices > 0) {
-        // Get vertices from FCL model
-        for (int i = 0; i < shape->num_vertices; ++i) {
-            Vector3f v = shape->vertices[i];
-            // Apply transformation
-            Vector3f transformed = transform * v;
-            vertices.emplace_back(transformed.x(), transformed.y(), transformed.z());
-        }
-        
-        // Get triangles from FCL model
-        for (int i = 0; i < shape->num_tris; ++i) {
-            Triangle tri = shape->tri_indices[i];
-            triangles.emplace_back(tri[0], tri[1], tri[2]);
+std::set<std::pair<std::string, std::string>> getAdjacentLinkPairs(const urdf::ModelInterfaceSharedPtr& robot) {
+    std::set<std::pair<std::string, std::string>> adjacent;
+    for (const auto& [name, link] : robot->links_) {
+        if (link->parent_joint) {
+            std::string parent = link->parent_joint->parent_link_name;
+            std::string child = link->name;
+            if (parent < child) adjacent.emplace(parent, child);
+            else adjacent.emplace(child, parent);
         }
     }
-    
+    return adjacent;
+}
+
+// -------------------- UTILITY FUNCTIONS ------------------------
+std::shared_ptr<open3d::geometry::TriangleMesh> fclToOpen3D(
+    const CollisionShape& shape,
+    const Transform3f& transform,
+    const Eigen::Vector3d& color = Eigen::Vector3d(0.7, 0.7, 0.7)) {
+
+    auto mesh = std::make_shared<open3d::geometry::TriangleMesh>();
+    std::vector<Eigen::Vector3d> vertices;
+    std::vector<Eigen::Vector3i> triangles;
+
+    if (shape && shape->num_vertices > 0) {
+        for (int i = 0; i < shape->num_vertices; ++i) {
+            Vector3f v = transform * shape->vertices[i];
+            vertices.emplace_back(v.x(), v.y(), v.z());
+        }
+
+        for (int i = 0; i < shape->num_tris; ++i) {
+            Triangle t = shape->tri_indices[i];
+            triangles.emplace_back(t[0], t[1], t[2]);
+        }
+    }
+
     mesh->vertices_ = vertices;
     mesh->triangles_ = triangles;
     mesh->ComputeVertexNormals();
     mesh->PaintUniformColor(color);
-    
+
     return mesh;
 }
 
-// Helper function to safely extract shape from collision object
-CollisionShape extractShape(const std::shared_ptr<CollisionObjectf>& collision_obj) {
-    auto geom = collision_obj->collisionGeometry();
+CollisionShape extractShape(const std::shared_ptr<CollisionObjectf>& obj) {
+    auto geom = obj->collisionGeometry();
     auto bvh = std::dynamic_pointer_cast<const BVHModel<BV>>(geom);
-    if (bvh) {
-        // Create a non-const copy of the BVH model
-        auto shape = std::make_shared<BVHModel<BV>>(*bvh);
-        return shape;
-    }
-    return nullptr;
+    return bvh ? std::make_shared<BVHModel<BV>>(*bvh) : nullptr;
+}
+
+Eigen::Isometry3f getFullLinkTransform(const urdf::LinkConstSharedPtr& link) {
+    if (!link || !link->parent_joint)
+        return Eigen::Isometry3f::Identity();
+
+    const urdf::Pose& pose = link->parent_joint->parent_to_joint_origin_transform;
+    Eigen::Isometry3f tf = Eigen::Isometry3f::Identity();
+    tf.translation() << pose.position.x, pose.position.y, pose.position.z;
+    Eigen::Quaternionf q(pose.rotation.w, pose.rotation.x, pose.rotation.y, pose.rotation.z);
+    tf.linear() = q.normalized().toRotationMatrix();
+
+    return getFullLinkTransform(link->getParent()) * tf;
 }
 
 // -------------------- URDF PARSER ------------------------
-std::map<std::string, std::shared_ptr<CollisionObjectf>> parseURDFToFCL(const std::string& urdf_path) {
+std::map<std::string, std::shared_ptr<CollisionObjectf>> parseURDFToFCL(
+    const std::string& urdf_path, 
+    urdf::ModelInterfaceSharedPtr& robot) {
+    
     std::ifstream urdf_file(urdf_path);
     if (!urdf_file.is_open()) {
         std::cerr << "URDF file not found: " << urdf_path << std::endl;
@@ -260,196 +246,136 @@ std::map<std::string, std::shared_ptr<CollisionObjectf>> parseURDFToFCL(const st
 
     std::stringstream buffer;
     buffer << urdf_file.rdbuf();
-    std::string urdf_string = buffer.str();
-
-    auto robot = urdf::parseURDF(urdf_string);
+    robot = urdf::parseURDF(buffer.str());
     if (!robot) {
-        std::cerr << "Failed to parse URDF file!" << std::endl;
+        std::cerr << "Failed to parse URDF" << std::endl;
         return {};
     }
 
-    std::map<std::string, std::shared_ptr<CollisionObjectf>> link_objects;
+    std::map<std::string, std::shared_ptr<CollisionObjectf>> objects;
 
-    std::cout << "\n🔍 Analyzing URDF links..." << std::endl;
     for (const auto& [name, link] : robot->links_) {
-        std::cout << "\n📦 Processing link: " << name << std::endl;
-        
-        if (!link->collision) {
-            std::cout << " No collision geometry defined" << std::endl;
+        if (!link->collision || !link->collision->geometry)
             continue;
-        }
-        
-        if (!link->collision->geometry) {
-            std::cout << " No geometry defined in collision" << std::endl;
-            continue;
-        }
 
         auto geom = link->collision->geometry;
         CollisionShape shape;
 
-       
-        // Handle different geometry types
-        if (geom->type == urdf::Geometry::BOX) {
-            auto box = std::dynamic_pointer_cast<urdf::Box>(geom);
-            std::cout << "Box dimensions: " << box->dim.x << " x " << box->dim.y << " x " << box->dim.z << std::endl;
-            shape = createBox(box->dim.x, box->dim.y, box->dim.z);
-            
-        } else if (geom->type == urdf::Geometry::CYLINDER) {
-            auto cyl = std::dynamic_pointer_cast<urdf::Cylinder>(geom);
-            std::cout << "Cylinder: radius=" << cyl->radius << ", length=" << cyl->length << std::endl;
-            shape = createCylinder(cyl->radius, cyl->length);
-            
-        } else if (geom->type == urdf::Geometry::SPHERE) {
-            auto sphere = std::dynamic_pointer_cast<urdf::Sphere>(geom);
-            std::cout << " Sphere radius: " << sphere->radius << std::endl;
-            shape = createSphere(sphere->radius);
-            
-        } else if (geom->type == urdf::Geometry::MESH) {
-            auto mesh = std::dynamic_pointer_cast<urdf::Mesh>(geom);
-            std::cout << "Mesh file: " << mesh->filename << std::endl;
-            if (mesh->scale.x != 1.0 || mesh->scale.y != 1.0 || mesh->scale.z != 1.0) {
-                std::cout << " Mesh scale: " << mesh->scale.x << " x " << mesh->scale.y << " x " << mesh->scale.z << std::endl;
+        try {
+            if (geom->type == urdf::Geometry::BOX) {
+                auto g = std::dynamic_pointer_cast<urdf::Box>(geom);
+                shape = createBox(g->dim.x, g->dim.y, g->dim.z);
+            } else if (geom->type == urdf::Geometry::CYLINDER) {
+                auto g = std::dynamic_pointer_cast<urdf::Cylinder>(geom);
+                shape = createCylinder(g->radius, g->length);
+            } else if (geom->type == urdf::Geometry::SPHERE) {
+                auto g = std::dynamic_pointer_cast<urdf::Sphere>(geom);
+                shape = createSphere(g->radius);
+            } else if (geom->type == urdf::Geometry::MESH) {
+                auto g = std::dynamic_pointer_cast<urdf::Mesh>(geom);
+                std::string path = g->filename;
+                if (path.find("package://") == 0)
+                    path = "/home/vansh/intern-ardee/src/" + path.substr(10);
+                urdf::Vector3 scale(g->scale.x, g->scale.y, g->scale.z);
+                shape = createMeshFromFile(path, scale);
+            } else {
+                continue;
             }
-            shape = createMeshFromFile(mesh->filename, mesh->scale);
-            
-        } else {
-            std::cout << "Unsupported geometry type!" << std::endl;
-            continue;
+
+            if (!shape) {
+                std::cerr << "Failed to create shape for link: " << name << std::endl;
+                continue;
+            }
+
+            Eigen::Isometry3f tf = getFullLinkTransform(link);
+            Eigen::Isometry3f local_tf = Eigen::Isometry3f::Identity();
+            auto& origin = link->collision->origin;
+            local_tf.translation() << origin.position.x, origin.position.y, origin.position.z;
+            Eigen::Quaternionf q(origin.rotation.w, origin.rotation.x, origin.rotation.y, origin.rotation.z);
+            local_tf.linear() = q.normalized().toRotationMatrix();
+
+            Transform3f final_tf;
+            Eigen::Isometry3f combined_tf = tf * local_tf;
+            final_tf.linear() = combined_tf.linear().cast<float>();
+            final_tf.translation() = combined_tf.translation().cast<float>();
+
+            auto obj = std::make_shared<CollisionObjectf>(shape, final_tf);
+            obj->computeAABB();
+            objects[name] = obj;
+        } catch (...) {
+            std::cerr << "Error loading link: " << name << std::endl;
         }
-
-        if (!shape) {
-            std::cout << "  Failed to create collision shape!" << std::endl;
-            continue;
-        }
-
-        // Get transform information
-        auto& origin = link->collision->origin;
-        Vector3f trans(origin.position.x, origin.position.y, origin.position.z);
-        std::cout << " Position: (" << trans.x() << ", " << trans.y() << ", " << trans.z() << ")" << std::endl;
-        std::cout << "Rotation: (" << origin.rotation.x << ", " << origin.rotation.y << ", " << origin.rotation.z << ")" << std::endl;
-
-        Matrix3f rot = (AngleAxisf(origin.rotation.z, Vector3f::UnitZ()) *
-                        AngleAxisf(origin.rotation.y, Vector3f::UnitY()) *
-                        AngleAxisf(origin.rotation.x, Vector3f::UnitX())).toRotationMatrix();
-
-        Transform3f tf;
-        tf.linear() = rot;
-        tf.translation() = trans;
-
-        link_objects[name] = std::make_shared<CollisionObjectf>(shape, tf);
-        std::cout << "   Successfully created collision object" << std::endl;
     }
 
-    std::cout << "\n Summary: " << link_objects.size() << " collision objects created from " 
-              << robot->links_.size() << " total links" << std::endl;
-
-    return link_objects;
+    return objects;
 }
 
-// -------------------- COLLISION VISUALIZATION ------------------------
-void visualizeCollisions(const std::map<std::string, std::shared_ptr<CollisionObjectf>>& models) {
+// -------------------- VISUALIZATION ------------------------
+void visualizeCollisions(
+    const std::map<std::string, std::shared_ptr<CollisionObjectf>>& models,
+    const std::set<std::pair<std::string, std::string>>& adjacent_pairs) {
+    
     auto vis = std::make_shared<open3d::visualization::Visualizer>();
-    vis->CreateVisualizerWindow("Collision Detection Visualization", 1200, 800);
-    
-    std::vector<std::pair<std::string, std::string>> colliding_pairs;
-    
-    std::cout << "\n🔍 Performing collision detection..." << std::endl;
-    
-    // Check all pairs for collisions
+    vis->CreateVisualizerWindow("Collision Visualization", 1200, 800);
+
+    std::vector<std::pair<std::string, std::string>> collisions;
     for (auto it1 = models.begin(); it1 != models.end(); ++it1) {
         for (auto it2 = std::next(it1); it2 != models.end(); ++it2) {
-            CollisionRequestf request;
-            CollisionResultf result;
-            
-            collide(it1->second.get(), it2->second.get(), request, result);
-            
-            if (result.isCollision()) {
-                colliding_pairs.emplace_back(it1->first, it2->first);
-                std::cout << "Collision detected: " << it1->first << " ↔ " << it2->first << std::endl;
-            }
-        }
-    }
-    
-    if (colliding_pairs.empty()) {
-        std::cout << "No collisions detected!" << std::endl;
-    } else {
-        std::cout << "Total collisions found: " << colliding_pairs.size() << std::endl;
-    }
-    
-    // Visualize all objects with collision-based coloring
-    for (const auto& [link_name, collision_obj] : models) {
-        auto shape = extractShape(collision_obj);
-        if (!shape) {
-            std::cerr << "Failed to extract shape from link: " << link_name << std::endl;
-            continue;
-        }
-        
-        auto transform = collision_obj->getTransform();
-        
-        // Color based on collision status
-        Eigen::Vector3d color;
-        bool is_colliding = false;
-        for (const auto& pair : colliding_pairs) {
-            if (pair.first == link_name || pair.second == link_name) {
-                is_colliding = true;
-                break;
-            }
-        }
-        
-        color = is_colliding ? Eigen::Vector3d(1.0, 0.2, 0.2) : Eigen::Vector3d(0.2, 0.8, 0.2);
-        
-        auto mesh = fclToOpen3D(shape, transform, color);
-        if (mesh && !mesh->vertices_.empty()) {
-            vis->AddGeometry(mesh);
-            std::cout << "Added link: " << link_name << " (" 
-                      << (is_colliding ? "COLLISION" : "SAFE") << ")" << std::endl;
-        }
-    }
-    
-    // Add coordinate frame
-    auto coord_frame = open3d::geometry::TriangleMesh::CreateCoordinateFrame(0.5);
-    vis->AddGeometry(coord_frame);
-    
-    // Set up camera and rendering options
-    auto& view_control = vis->GetViewControl();
-    view_control.SetZoom(0.5);
-    
-    auto& render_option = vis->GetRenderOption();
-    render_option.show_coordinate_frame_ = true;
-    render_option.background_color_ = Eigen::Vector3d(0.05, 0.05, 0.05);
-    render_option.mesh_show_wireframe_ = false;
-    render_option.mesh_show_back_face_ = true;
-    
+            std::string a = it1->first;
+            std::string b = it2->first;
 
-    
-    // Run the visualizer
+            // Skip adjacent links
+            auto key = (a < b) ? std::make_pair(a, b) : std::make_pair(b, a);
+            if (adjacent_pairs.count(key)) continue;
+            
+            CollisionRequestf req;
+            CollisionResultf res;
+            collide(it1->second.get(), it2->second.get(), req, res);
+            if (res.isCollision())
+                collisions.emplace_back(it1->first, it2->first);
+        }
+    }
+
+    std::cout << "Found " << collisions.size() << " collisions:" << std::endl;
+    for (const auto& collision : collisions) {
+        std::cout << "  " << collision.first << " <-> " << collision.second << std::endl;
+    }
+
+    for (const auto& [name, obj] : models) {
+        auto shape = extractShape(obj);
+        if (!shape) continue;
+
+        bool collides = std::any_of(collisions.begin(), collisions.end(),
+            [&](const auto& pair) { return pair.first == name || pair.second == name; });
+
+        auto color = collides ? Eigen::Vector3d(1.0, 0.0, 0.0) : Eigen::Vector3d(0.0, 1.0, 0.0);
+        auto mesh = fclToOpen3D(shape, obj->getTransform(), color);
+        vis->AddGeometry(mesh);
+    }
+
+    vis->AddGeometry(open3d::geometry::TriangleMesh::CreateCoordinateFrame(0.5));
     vis->Run();
     vis->DestroyVisualizerWindow();
 }
 
 // -------------------- MAIN ------------------------
 int main() {
-    std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-cpp/urdf2/mr_robot.urdf";
+    std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-cpp/urdf/PXA-100.urdf";
     
-    std::cout << "Starting URDF Collision Detection and Visualization..." << std::endl;
-    std::cout << "Loading URDF file: " << urdf_path << std::endl;
-    
-    auto models = parseURDFToFCL(urdf_path);
+    urdf::ModelInterfaceSharedPtr robot;
+    auto models = parseURDFToFCL(urdf_path, robot);
     
     if (models.empty()) {
-        std::cerr << " No models loaded from URDF file!" << std::endl;
+        std::cerr << "No collision models loaded!" << std::endl;
         return -1;
     }
+
+    auto adjacent_pairs = getAdjacentLinkPairs(robot);
     
-    std::cout << "Successfully loaded " << models.size() << " links from URDF" << std::endl;
+    std::cout << "Loaded " << models.size() << " collision models" << std::endl;
+    std::cout << "Found " << adjacent_pairs.size() << " adjacent link pairs" << std::endl;
     
-    for (const auto& [link, model] : models) {
-        std::cout << " Parsed link: " << link << std::endl;
-    }
-    
-    // Launch collision detection visualization
-    std::cout << "\n Launching collision detection visualization..." << std::endl;
-    visualizeCollisions(models);
+    visualizeCollisions(models, adjacent_pairs);
     
     return 0;
 }
