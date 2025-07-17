@@ -343,43 +343,48 @@ private:
     }
 
 
-    std::vector<KDL::Vector> interpolateJointsWithFK(const KDL::JntArray& q_start,const KDL::JntArray& q_goal,int steps,std::vector<KDL::JntArray>& path,KDL::ChainFkSolverPos& fk_solver)
-        {
-            std::vector<KDL::Vector> ee_positions;
-
+     void interpolateJointsWithFK(const KDL::JntArray& q_start, const KDL::JntArray& q_goal, int steps,
+                             std::vector<KDL::JntArray>& path,
+                             KDL::ChainFkSolverPos_recursive& fk_solver) {
             if (q_start.rows() != q_goal.rows()) {
                 std::cerr << "q_start and q_goal must have same dimensions" << std::endl;
-                return ee_positions;
+                return;
             }
 
             path.clear();
-
             for (int i = 0; i <= steps; ++i) {
                 double alpha = static_cast<double>(i) / steps;
                 KDL::JntArray q_interp(q_start.rows());
-
                 for (unsigned int j = 0; j < q_start.rows(); ++j) {
                     q_interp(j) = (1 - alpha) * q_start(j) + alpha * q_goal(j);
                 }
 
                 path.push_back(q_interp);
 
-                // FK to get end-effector pose
+                // Print joint values
+                std::cout << "Step " << i << " - Joints: ";
+                for (unsigned int j = 0; j < q_interp.rows(); ++j) {
+                    std::cout << q_interp(j) << " ";
+                }
+
+                // Compute FK for this step
                 KDL::Frame ee_pose;
                 if (fk_solver.JntToCart(q_interp, ee_pose) >= 0) {
                     double x = ee_pose.p.x();
                     double y = ee_pose.p.y();
                     double z = ee_pose.p.z();
-                    ee_positions.emplace_back(x, y, z);
+                    double roll, pitch, yaw;
+                    ee_pose.M.GetRPY(roll, pitch, yaw);
+                    
+                    std::cout << " | End-effector XYZ: (" << x << ", " << y << ", " << z << ")";
+                    std::cout << " | RPY: (" << roll << ", " << pitch << ", " << yaw << ")";
                 } else {
-                    std::cerr << "FK failed at step " << i << std::endl;
-                    ee_positions.emplace_back(KDL::Vector::Zero());  // Optional fallback
+                    std::cout << " | FK failed!";
                 }
+
+                std::cout << std::endl;
             }
-
-            return ee_positions;
         }
-
 
 
     
