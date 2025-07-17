@@ -62,6 +62,9 @@ private:
     // Timing
     std::chrono::steady_clock::time_point last_update_;
     std::chrono::steady_clock::time_point last_target_switch_;
+
+    std::vector<KDL::JntArray> path;
+
     
 public:
     NativeTrackIKNode() : 
@@ -338,76 +341,155 @@ private:
             }
         }
     }
-    
-    bool solveIKPositionOnly(const Vector& target_pos, const JntArray& q_init, JntArray& q_result) {
-        double distance_from_origin = target_pos.Norm();
-        std::cout << "Target position: [" << std::fixed << std::setprecision(3) 
-                 << target_pos.x() << ", " << target_pos.y() << ", " << target_pos.z() 
-                 << "], distance: " << distance_from_origin << std::endl;
-        
-        if (distance_from_origin < 0.01) {
-            std::cerr << "Target too close to origin: " << distance_from_origin << " m" << std::endl;
-            return false;
-        }
-        
-        if (distance_from_origin > 1.0) {
-            std::cerr << "Target too far from origin: " << distance_from_origin << " m" << std::endl;
-            return false;
-        }
-        
-        Frame target_frame;
-        target_frame.p = target_pos;
-        
-        q_result = JntArray(kdl_chain_.getNrOfJoints());
-        
-        auto start_time = std::chrono::high_resolution_clock::now();
-        int result = tracik_solver_->CartToJnt(q_init, target_frame, q_result);
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        
-        if (result >= 0) {
-            successful_solutions_++;
-            average_solve_time_ = (average_solve_time_ * (successful_solutions_ - 1) + 
-                                  duration.count() / 1000.0) / successful_solutions_;
-            
-            Frame verify_frame;
-            if (fk_solver_->JntToCart(q_result, verify_frame) >= 0) {
-                Vector pos_error = target_pos - verify_frame.p;
-                double error_norm = pos_error.Norm();
-                
-                std::cout << "Solution found! Position error: " << std::fixed << std::setprecision(6) 
-                         << error_norm << " m" << std::endl;
-                
-                if (error_norm > position_tolerance_) {
-                    std::cout << "WARNING: Large position error: " << error_norm << " m" << std::endl;
+
+
+    std::vector<KDL::Vector> interpolateJointsWithFK(const KDL::JntArray& q_start,const KDL::JntArray& q_goal,int steps,std::vector<KDL::JntArray>& path,KDL::ChainFkSolverPos& fk_solver)
+        {
+            std::vector<KDL::Vector> ee_positions;
+
+            if (q_start.rows() != q_goal.rows()) {
+                std::cerr << "q_start and q_goal must have same dimensions" << std::endl;
+                return ee_positions;
+            }
+
+            path.clear();
+
+            for (int i = 0; i <= steps; ++i) {
+                double alpha = static_cast<double>(i) / steps;
+                KDL::JntArray q_interp(q_start.rows());
+
+                for (unsigned int j = 0; j < q_start.rows(); ++j) {
+                    q_interp(j) = (1 - alpha) * q_start(j) + alpha * q_goal(j);
+                }
+
+                path.push_back(q_interp);
+
+                // FK to get end-effector pose
+                KDL::Frame ee_pose;
+                if (fk_solver.JntToCart(q_interp, ee_pose) >= 0) {
+                    double x = ee_pose.p.x();
+                    double y = ee_pose.p.y();
+                    double z = ee_pose.p.z();
+                    ee_positions.emplace_back(x, y, z);
+                } else {
+                    std::cerr << "FK failed at step " << i << std::endl;
+                    ee_positions.emplace_back(KDL::Vector::Zero());  // Optional fallback
                 }
             }
-            
-            return true;
-        } else {
-            failed_solutions_++;
-            
-            std::cerr << "Track-IK failed for target [" << std::fixed << std::setprecision(3) 
-                     << target_pos.x() << ", " << target_pos.y() << ", " << target_pos.z() << "]" << std::endl;
-            
-            switch (result) {
-                case -1:
-                    std::cerr << "Track-IK failed: Timeout occurred" << std::endl;
-                    break;
-                case -2:
-                    std::cerr << "Track-IK failed: No solution within tolerance" << std::endl;
-                    break;
-                case -3:
-                    std::cerr << "Track-IK failed: Invalid inputs" << std::endl;
-                    break;
-                default:
-                    std::cerr << "Track-IK failed: Unknown error code " << result << std::endl;
-                    break;
-            }
-            
+
+            return ee_positions;
+        }
+
+
+
+    
+    // Predict end-effector position after joint interpolation
+    Vector predictEndEffectorPosition(const JntArray& interpolated_joints) {
+        Frame predicted_frame;
+        if (fk_solver_->JntToCart(interpolated_joints, predicted_frame) >= 0) {
+            return predicted_frame.p;
+        }
+        std::cout<<"ikfailed predict endfactor position"<<std::endl;
+        return Vector(0,0,0); // Return zero vector if FK fails
+    }
+    
+    // Check if waypoint is reachable and safe
+    bool isWaypointValid(const Vector& waypoint) {
+        // Check distance constraints
+        double distance = waypoint.Norm();
+        if (distance < 0.01 || distance > 1.0) {
             return false;
         }
+        
+        // Check if IK solution exists
+        JntArray temp_solution(kdl_chain_.getNrOfJoints());
+        return solveIKPositionOnly(waypoint, current_joint_positions_, temp_solution);
     }
+    
+
+    
+    bool solveIKPositionOnly(const Vector& target_pos, const JntArray& q_init, JntArray& q_result) {
+            double distance_from_origin = target_pos.Norm();
+            std::cout << "Target position: [" << std::fixed << std::setprecision(3) 
+                    << target_pos.x() << ", " << target_pos.y() << ", " << target_pos.z() 
+                    << "], distance: " << distance_from_origin << std::endl;
+
+            if (distance_from_origin < 0.01) {
+                std::cerr << "Target too close to origin: " << distance_from_origin << " m" << std::endl;
+                return false;
+            }
+
+            if (distance_from_origin > 1.0) {
+                std::cerr << "Target too far from origin: " << distance_from_origin << " m" << std::endl;
+                return false;
+            }
+
+            Frame target_frame;
+            target_frame.p = target_pos;
+
+            q_result = JntArray(kdl_chain_.getNrOfJoints());
+
+            auto start_time = std::chrono::high_resolution_clock::now();
+            int result = tracik_solver_->CartToJnt(q_init, target_frame, q_result);
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+
+            if (result >= 0) {
+                successful_solutions_++;
+                average_solve_time_ = (average_solve_time_ * (successful_solutions_ - 1) +
+                                    duration.count() / 1000.0) / successful_solutions_;
+
+                // ✅ Now interpolate from q_init to q_result
+                int steps = 50;
+                interpolateJointsWithFK(q_init, q_result, steps, path, *fk_solver_);
+                // Print interpolated steps
+                for (size_t i = 0; i < path.size(); ++i) {
+                    std::cout << "Step " << i << ": ";
+                    for (unsigned int j = 0; j < path[i].rows(); ++j) {
+                        std::cout << std::fixed << std::setprecision(3) << path[i](j) << " ";
+                    }
+                    std::cout << std::endl;
+                }
+
+                Frame verify_frame;
+                if (fk_solver_->JntToCart(q_result, verify_frame) >= 0) {
+                    Vector pos_error = target_pos - verify_frame.p;
+                    double error_norm = pos_error.Norm();
+
+                    std::cout << "Solution found! Position error: " << std::fixed << std::setprecision(6) 
+                            << error_norm << " m" << std::endl;
+
+                    if (error_norm > position_tolerance_) {
+                        std::cout << "WARNING: Large position error: " << error_norm << " m" << std::endl;
+                    }
+                }
+
+                return true;
+            } else {
+                failed_solutions_++;
+
+                std::cerr << "Track-IK failed for target [" << std::fixed << std::setprecision(3) 
+                        << target_pos.x() << ", " << target_pos.y() << ", " << target_pos.z() << "]" << std::endl;
+
+                switch (result) {
+                    case -1:
+                        std::cerr << "Track-IK failed: Timeout occurred" << std::endl;
+                        break;
+                    case -2:
+                        std::cerr << "Track-IK failed: No solution within tolerance" << std::endl;
+                        break;
+                    case -3:
+                        std::cerr << "Track-IK failed: Invalid inputs" << std::endl;
+                        break;
+                    default:
+                        std::cerr << "Track-IK failed: Unknown error code " << result << std::endl;
+                        break;
+                }
+
+                return false;
+            }
+        }
+
     
     void update() {
         auto now = std::chrono::steady_clock::now();
