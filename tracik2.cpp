@@ -447,15 +447,8 @@ private:
                 // ✅ Now interpolate from q_init to q_result
                 int steps = 5;
                 interpolateJointsWithFK(q_init, q_result, steps, path, *fk_solver_);
-            
                 // Print interpolated steps
-                // for (size_t i = 0; i < path.size(); ++i) {
-                //     std::cout << "Step " << i << ": ";
-                //     for (unsigned int j = 0; j < path[i].rows(); ++j) {
-                //         std::cout << std::fixed << std::setprecision(3) << path[i](j) << " ";
-                //     }
-                //     std::cout << std::endl;
-                // }
+                
 
                 Frame verify_frame;
                 if (fk_solver_->JntToCart(q_result, verify_frame) >= 0) {
@@ -496,6 +489,24 @@ private:
             }
         }
 
+
+    void waypoint_checker() {
+        for (size_t i = 0; i < path.size(); ++i) {
+            bool all_joints_match = false;
+
+            for (unsigned int j = 0; j < current_joint_positions_.rows(); ++j) {
+                if (path[i](j) == current_joint_positions_(j)) {  // add tolerance
+                    all_joints_match = true;
+                    break;
+                }
+            }
+
+            if (all_joints_match) {
+                std::cout << "✅ Waypoint " << i << " reached" << std::endl;
+            }
+        }
+    }   
+
     
     void update() {
         auto now = std::chrono::steady_clock::now();
@@ -503,54 +514,27 @@ private:
         // Smooth joint interpolation
         bool joints_moving = false;
         for (unsigned int i = 0; i < current_joint_positions_.rows(); ++i) {
-            // std::cout << "\n🔧 Moving joint " << i << " (" 
-            //         << ((i < joint_names_.size()) ? joint_names_[i] : "unnamed") 
-            //         << ")\n";
-
-            while (std::abs(current_joint_positions_(i) - target_joint_positions_(i)) > convergence_threshold_) {
-                double delta = target_joint_positions_(i) - current_joint_positions_(i);
-                double max_step = joint_velocity_limit_ * 0.1; // 100ms
+        
+            double delta = target_joint_positions_(i) - current_joint_positions_(i);
+            
+            if (std::abs(delta) > convergence_threshold_) {
+                double max_step = joint_velocity_limit_ * 0.1; // 100ms timestep
                 double step = std::min(std::abs(delta), max_step);
-                double direction = (delta > 0) ? 1.0 : -1.0;
+                
+                current_joint_positions_(i) += (delta > 0 ? 1 : -1) * step;
+                joint_velocities_(i) = (delta > 0 ? 1 : -1) * step / 0.1;
 
-                current_joint_positions_(i) += direction * step;
-                joint_velocities_(i) = direction * step / 0.1;
-
-                // 🔹 Print all joint angles (in rad and deg)
-                std::cout << "\n--- Joint Angles ---" << std::endl;
-                for (unsigned int j = 0; j < current_joint_positions_.rows(); ++j) {
-                    double rad = current_joint_positions_(j);
-                    double deg = rad * 180.0 / M_PI;
-                    std::string joint_name = (j < joint_names_.size()) ? joint_names_[j] : "joint_" + std::to_string(j);
-                    std::cout << std::setw(12) << joint_name
-                            << ": " << std::fixed << std::setprecision(4) 
-                            << rad << " rad | " 
-                            << std::setprecision(2) << deg << " deg" << std::endl;
-                }
-
-                // 🔹 Print end-effector pose
-                Frame ee_frame;
-                if (fk_solver_->JntToCart(current_joint_positions_, ee_frame) >= 0) {
-                    std::cout << "\n EE Position: [" 
-                            << std::fixed << std::setprecision(4)
-                            << ee_frame.p.x() << ", " 
-                            << ee_frame.p.y() << ", " 
-                            << ee_frame.p.z() << "]" << std::endl;
-                }
-
-                std::cout << std::string(50, '-') << std::endl;
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // optional smoothness
+                joints_moving = true;
+            } else {
+                current_joint_positions_(i) = target_joint_positions_(i);
+                joint_velocities_(i) = 0.0;
             }
-
-            // Finalize joint
-            current_joint_positions_(i) = target_joint_positions_(i);
-            joint_velocities_(i) = 0.0;
-
-            // std::cout << "✅ Joint " << i << " reached target\n";
         }
         
         
+        waypoint_checker();
+        // Print current and target joint angles
+        printJointAngles();
         
         // Check if target is reached
         if (!joints_moving && !target_reached_) {
@@ -589,7 +573,79 @@ private:
         }
     }
     
+    void printJointAngles() {
+        std::cout << "\n=== Joint Angles ===" << std::endl;
+        std::cout << std::left << std::setw(15) << "Joint Name" 
+                  << std::setw(15) << "Current (rad)" 
+                  << std::setw(15) << "Target (rad)" 
+                  << std::endl;
+        std::cout << std::string(75, '-') << std::endl;
+        bool all_reached=true;
+        std::vector<double> joint_errors;
 
+        double error;
+        
+        for (unsigned int i = 0; i < current_joint_positions_.rows(); ++i) {
+            std::string joint_name = (i < joint_names_.size()) ? joint_names_[i] : ("joint_" + std::to_string(i));
+            
+            double current_rad = current_joint_positions_(i);
+            double target_rad = target_joint_positions_(i);
+            double current_deg = current_rad * 180.0 / M_PI;
+            double target_deg = target_rad * 180.0 / M_PI;
+            
+            joint_errors.push_back(error);
+            
+            if (std::abs(current_rad - target_rad) > 1e-3)  // 🔍 threshold check
+            all_reached = false;
+
+            
+            
+            std::cout << std::left << std::setw(15) << joint_name
+                      << std::setw(15) << std::fixed << std::setprecision(3) << current_rad
+                      << std::setw(15) << std::fixed << std::setprecision(3) << target_rad<< std::endl;;
+                    //   << std::setw(15) << std::fixed << std::setprecision(1) << current_deg
+                    //   << std::setw(15) << std::fixed << std::setprecision(1) << target_deg << std::endl;
+
+
+
+        }
+
+
+        for (size_t i = 0; i < path.size(); ++i) {
+                    std::cout << "Step " << i << ": ";
+                    for (unsigned int j = 0; j < path[i].rows(); ++j) {
+                        std::cout << std::fixed << std::setprecision(3) << path[i](j) << " ";
+                    }
+                    std::cout << std::endl;
+                }
+
+        
+        if (all_reached) {
+            std::cout << "\n✅ Reached Target Joint Configuration!" << std::endl;
+            std::cout << "\nJoint-wise Error (target - current) in radians:\n";
+            
+            for (size_t i = 0; i < joint_errors.size(); ++i) {
+                std::string joint_name = (i < joint_names_.size()) ? joint_names_[i] : ("joint_" + std::to_string(i));
+                std::cout << std::setw(2) << i << ". " << std::setw(15) << joint_name
+                        << ": " << std::fixed << std::setprecision(6) << joint_errors[i] << " rad" << std::endl;
+            }
+
+            std::cout << std::flush; 
+        }
+
+      
+        
+        // Print current end-effector position
+        Frame current_frame;
+        if (fk_solver_->JntToCart(current_joint_positions_, current_frame) >= 0) {
+            std::cout << "\nCurrent EE Position: [" << std::fixed << std::setprecision(3) 
+                     << current_frame.p.x() << ", " << current_frame.p.y() << ", " << current_frame.p.z() << "]" << std::endl;
+        }
+        
+        std::cout << "Target Position: [" << std::fixed << std::setprecision(3) 
+                 << current_target_position_.x() << ", " << current_target_position_.y() << ", " << current_target_position_.z() << "]" << std::endl;
+        std::cout << std::string(75, '=') << std::endl;
+    }
 };
 
 int main() {

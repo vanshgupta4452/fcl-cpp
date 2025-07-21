@@ -99,3 +99,16 @@ target_link_libraries(tracik
   ${NLOPT_LIB}         # Needed by trac_ik
   Eigen3::Eigen
 )
+
+add_executable(tracik2 tracik2.cpp)
+
+target_link_libraries(tracik2
+  trac_ik_lib          # ✅ Name of the target inside trac_ik_lib's CMakeLists
+  orocos-kdl
+  urdfdom_model
+  urdfdom_world
+  urdfdom_sensor
+  console_bridge
+  ${NLOPT_LIB}         # Needed by trac_ik
+  Eigen3::Eigen
+)
